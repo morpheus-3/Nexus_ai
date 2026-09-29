@@ -30,6 +30,15 @@ All demo navigation and API workflows are available without an account. Approval
 
 Prerequisites: Node.js 22+, pnpm, and Docker Desktop or a local PostgreSQL 16+ server.
 
+Clone the repository and enter the project folder:
+
+```powershell
+git clone https://github.com/morpheus-3/Nexus_ai.git
+cd Nexus_ai
+```
+
+Then complete the first-time setup:
+
 ```powershell
 if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 # Edit only the required keys in .env; keep any existing values you need.
@@ -41,6 +50,24 @@ pnpm dev
 ```
 
 Open <http://localhost:3000>; it opens the dashboard directly. Use BDC Data Automation's **Load demo dataset** control to populate sample business records.
+
+### Run the app after setup
+
+From the project folder, start PostgreSQL and the development server:
+
+```powershell
+docker compose up -d postgres
+pnpm dev
+```
+
+Open <http://localhost:3000>. Press `Ctrl+C` in the terminal to stop the app.
+
+To build and run the production version locally, keep PostgreSQL running and use:
+
+```powershell
+pnpm build
+pnpm start
+```
 
 The local PostgreSQL defaults are role `postgres`, database `app_db`, and host port `5432`. `docker compose up -d postgres` preserves the named `postgres_data` volume. PostgreSQL's `POSTGRES_USER` and `POSTGRES_DB` initialize an empty data directory only; changing them does not rename roles/databases in an existing volume. Keep `DATABASE_URL` aligned with the existing database, and percent-encode URL-reserved password characters.
 
