@@ -2,6 +2,8 @@
 import React, { useState, useRef, useEffect } from "react";
 import { TopBar } from "@/components/layout/TopBar";
 import { AgentRunButton } from "@/components/agents/AgentRunButton";
+import { ExecutionTrace } from "@/components/agents/ExecutionTrace";
+import type { AgentExecution } from "@/lib/agent-planner";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -22,6 +24,7 @@ interface Message {
   diagnostic?: string;
   durationMs?: number;
   timestamp?: Date;
+  execution?: AgentExecution;
 }
 
 const SUGGESTED_PROMPTS = [
@@ -115,6 +118,7 @@ function MessageBubble({ msg }: { msg: Message }) {
           </div>
         )}
 
+        <ExecutionTrace execution={msg.execution} />
         {/* Message content */}
         <div className="rounded-xl rounded-tl-sm border border-[hsl(222_30%_18%)] bg-[hsl(222_40%_10%)] px-4 py-3">
           <div className="text-sm text-slate-300 whitespace-pre-wrap leading-relaxed prose-sm max-w-none"
@@ -168,6 +172,7 @@ export default function CommandPage() {
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [aiPlanning, setAiPlanning] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -192,7 +197,7 @@ export default function CommandPage() {
       const res = await fetch("/api/agent/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: text.trim(), sessionId }),
+        body: JSON.stringify({ message: text.trim(), sessionId, aiPlanning }),
       });
       const data = await res.json();
       if (res.ok) {
@@ -209,6 +214,7 @@ export default function CommandPage() {
           diagnostic: data.diagnostic,
           durationMs: data.durationMs,
           timestamp: new Date(),
+          execution: data.execution,
         };
         setMessages(prev => [...prev, assistantMsg]);
       } else {
@@ -219,6 +225,9 @@ export default function CommandPage() {
           responseSource: data.responseSource,
           responseModel: data.responseModel,
           fallbackReason: data.fallbackReason,
+          agent: data.agent,
+          toolsUsed: data.toolsUsed,
+          execution: data.execution,
           timestamp: new Date(),
         }]);
       }
@@ -244,7 +253,7 @@ export default function CommandPage() {
     <div className="flex flex-col h-full animate-fadeIn">
       <TopBar
         title="AI Command Center"
-        subtitle="Multi-agent supervisor · LangGraph orchestration"
+        subtitle="Validated planning · Read-only agent tools"
         actions={<div className="flex items-center gap-2"><AgentRunButton agent="supply_chain"/><AgentRunButton agent="fraud"/><div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20">
             <div className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
             <span className="text-[10px] font-semibold text-emerald-400">AGENTS READY</span>
@@ -289,6 +298,13 @@ export default function CommandPage() {
 
           {/* Input */}
           <div className="border-t border-[hsl(222_30%_18%)] p-4">
+            <label className="mb-2 flex items-center gap-2 text-xs text-slate-300">
+              <input type="checkbox" checked={aiPlanning} disabled={loading} onChange={event => setAiPlanning(event.target.checked)} aria-describedby="planning-disclosure" />
+              Use AI planning
+            </label>
+            <p id="planning-disclosure" className="mb-3 text-[11px] text-slate-500">
+              AI planning sends your request text to Groq to choose analysis steps. Database records stay local. If unavailable, local routing is used. Each request is analyzed independently.
+            </p>
             <div className="flex gap-2 items-end">
               <div className="flex-1 relative">
                 <textarea
@@ -298,6 +314,8 @@ export default function CommandPage() {
                   onKeyDown={handleKeyDown}
                   placeholder="Ask about inventory, invoices, fraud, BDC automation..."
                   rows={1}
+                  maxLength={2000}
+                  aria-label="Request an agent analysis"
                   disabled={loading}
                   className="w-full px-4 py-2.5 pr-12 rounded-xl border border-[hsl(222_30%_22%)] bg-[hsl(222_30%_14%)] text-sm text-slate-200 placeholder:text-slate-500 focus:outline-none focus:ring-1 focus:ring-[hsl(185_84%_45%)] focus:border-[hsl(185_84%_45%)] resize-none disabled:opacity-50 transition-colors"
                   style={{ minHeight: "44px", maxHeight: "120px" }}
@@ -310,7 +328,8 @@ export default function CommandPage() {
               </div>
               <Button
                 onClick={() => sendMessage(input)}
-                disabled={!input.trim() || loading}
+                disabled={!input.trim() || loading || !sessionId}
+                aria-label="Send request"
                 size="icon"
                 className="h-11 w-11 rounded-xl"
               >

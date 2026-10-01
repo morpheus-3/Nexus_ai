@@ -44,26 +44,24 @@ export async function POST(req: NextRequest) {
     const affectedInvoiceIds: number[] = [];
 
     if (request.type === "purchase_requisition" && (action === "approve" || action === "reject")) {
-      if (typeof payload.prNumber !== "string") return { error: "The approval request has no linked requisition", statusCode: 409 };
-      const [pr] = await tx.update(purchaseRequisitions).set({ status: action === "approve" ? "approved" : "rejected", updatedAt: now }).where(eq(purchaseRequisitions.prNumber, payload.prNumber)).returning({ id: purchaseRequisitions.id });
-      if (!pr) return { error: "The linked requisition no longer exists; approval was not applied", statusCode: 409 };
+      if (action === "approve" && typeof payload.prNumber !== "string") return { error: "This request has no linked purchase requisition, so it cannot be approved. Reject this outdated request and run a new analysis for current recommendations.", statusCode: 409 };
+      if (typeof payload.prNumber === "string") {
+        const [pr] = await tx.update(purchaseRequisitions).set({ status: action === "approve" ? "approved" : "rejected", updatedAt: now }).where(and(eq(purchaseRequisitions.prNumber, payload.prNumber), eq(purchaseRequisitions.status, "pending"))).returning({ id: purchaseRequisitions.id });
+        if (!pr && action === "approve") return { error: "The linked requisition is missing or no longer pending; approval was not applied", statusCode: 409 };
+      }
     }
 
-    if (request.type === "payment_block" && action === "approve" && typeof payload.invoiceId === "number") {
-      const [invoice] = await tx.update(invoices).set({ paymentStatus: "blocked", reviewStatus: "escalated", updatedAt: now }).where(and(eq(invoices.id, payload.invoiceId), eq(invoices.paymentStatus, "pending"))).returning({ id: invoices.id });
-      if (!invoice) return { error: "The linked invoice is missing or no longer pending; payment was not blocked", statusCode: 409 };
-      affectedInvoiceIds.push(invoice.id);
-    }
-
-    if (request.type === "payment_block" && action === "approve" && Array.isArray(payload.invoiceIds)) {
-      const ids = [...new Set(payload.invoiceIds.filter((id): id is number => Number.isInteger(id)))];
-      if (ids.length === 0) return { error: "No pending invoice IDs are linked to this approval", statusCode: 409 };
+    if (request.type === "payment_block" && action === "approve") {
+      // Normalize both supported payload shapes before making any changes.
+      const rawIds = payload.invoiceIds !== undefined ? payload.invoiceIds : payload.invoiceId !== undefined ? [payload.invoiceId] : [];
+      if (!Array.isArray(rawIds) || rawIds.length === 0 || !rawIds.every(id => typeof id === "number" && Number.isSafeInteger(id) && id > 0)) {
+        return { error: "The approval request has no valid linked invoice IDs. Run a new invoice analysis to create a current recommendation.", statusCode: 409 };
+      }
+      const ids = [...new Set(rawIds as number[])];
       const eligible = await tx.select({ id: invoices.id }).from(invoices).where(and(inArray(invoices.id, ids), eq(invoices.paymentStatus, "pending"))).for("update");
       if (eligible.length !== ids.length) return { error: "One or more linked invoices are missing or no longer pending; no blocks were applied", statusCode: 409 };
       const updated = await tx.update(invoices).set({ paymentStatus: "blocked", reviewStatus: "escalated", updatedAt: now }).where(inArray(invoices.id, ids)).returning({ id: invoices.id });
       affectedInvoiceIds.push(...updated.map(invoice => invoice.id));
-    } else if (request.type === "payment_block" && action === "approve") {
-      return { error: "The approval request has no linked invoice IDs", statusCode: 409 };
     }
 
     if (request.type === "batch_execution" && action === "approve" && typeof payload.batchJobId === "number") {
@@ -73,7 +71,7 @@ export async function POST(req: NextRequest) {
       return { error: "The approval request has no linked batch job", statusCode: 409 };
     }
 
-    await tx.update(approvalRequests).set({ status: newStatus, approvedBy: null, approvedByName: null, approvalNotes: notes, rejectionReason: reason, resolvedAt: now, updatedAt: now }).where(eq(approvalRequests.requestId, requestId));
+    const [updatedRequest] = await tx.update(approvalRequests).set({ status: newStatus, approvedBy: null, approvedByName: null, approvalNotes: notes, rejectionReason: reason, resolvedAt: now, updatedAt: now }).where(eq(approvalRequests.requestId, requestId)).returning();
     await tx.insert(auditLog).values({
       action: request.type === "payment_block" && action === "approve" ? "invoice_payment_blocked" : `approval_${action}`,
       resourceType: request.type === "payment_block" && affectedInvoiceIds.length === 1 ? "invoice" : "approval_request",
@@ -84,7 +82,7 @@ export async function POST(req: NextRequest) {
       severity: action === "reject" ? "warning" : "info",
       metadata: { requestType: request.type, paymentStatus: request.type === "payment_block" ? action === "approve" ? "blocked" : "unchanged" : undefined, affectedInvoiceIds },
     });
-    return { success: true, status: newStatus };
+    return { success: true, status: newStatus, request: { ...updatedRequest, payload } };
   });
 
   if ("error" in outcome) return NextResponse.json({ error: outcome.error }, { status: outcome.statusCode });

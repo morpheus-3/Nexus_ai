@@ -24,6 +24,7 @@ export async function generateWithGroq(
   systemPrompt: string,
   userPrompt: string,
   fetcher: typeof fetch = fetch,
+  options: { jsonMode?: boolean } = {},
 ): Promise<GroqGeneration> {
   const model = getGroqModel();
   const apiKey = process.env.GROQ_API_KEY?.trim();
@@ -41,6 +42,7 @@ export async function generateWithGroq(
         ],
         temperature: 0.2,
         max_tokens: 700,
+        ...(options.jsonMode ? { response_format: { type: "json_object" } } : {}),
       }),
       signal: AbortSignal.timeout(15_000),
     });

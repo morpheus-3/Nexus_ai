@@ -3,6 +3,7 @@ import { agentRuns, inventoryItems, invoices, vendors, purchaseOrders, purchaseR
 import { lt, eq, and, or, desc, sql } from "drizzle-orm";
 import { generateWithGroq, type FallbackReason, type GenerationSource } from "@/lib/groq";
 import { getFraudPaymentMetrics, matchPendingRequisitions } from "@/lib/agent-decisions";
+import { createAgentPlan, executeAgentPlan, type AgentExecution } from "@/lib/agent-planner";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export type AgentType = "supply_chain" | "fraud" | "bdc" | "multi_agent" | "unknown";
@@ -20,6 +21,7 @@ export interface AgentResponse {
   diagnostic?: string;
   status: "completed" | "failed";
   durationMs: number;
+  execution?: AgentExecution;
 }
 
 async function generateAgentNarrative(
@@ -307,7 +309,7 @@ export async function runFraudAgent(message: string, userId?: number): Promise<A
 // ─── BDC Agent ────────────────────────────────────────────────────────────────
 export async function runBDCAgent(message: string, userId?: number): Promise<AgentResponse> {
   const start = Date.now();
-  const tools = ["list_batch_jobs", "get_batch_status", "validate_bdc_fields"];
+  const tools = ["list_batch_jobs"];
 
   try {
     const recentJobs = await db.select().from(batchJobs).orderBy(desc(batchJobs.createdAt)).limit(5);
@@ -349,41 +351,38 @@ export async function runBDCAgent(message: string, userId?: number): Promise<Age
 }
 
 // ─── Supervisor (Multi-Agent Orchestrator) ────────────────────────────────────
-export async function runSupervisor(message: string, userId?: number): Promise<AgentResponse> {
+export async function runSupervisor(message: string, userId?: number, aiPlanning = false): Promise<AgentResponse> {
   const start = Date.now();
-  const intent = classifyIntent(message);
-
-  if (intent === "multi_agent") {
-    const [scResult, fraudResult] = await Promise.all([
-      runSupplyChainAgent(message, userId),
-      runFraudAgent(message, userId),
-    ]);
-
-    const combined = `## Supervisor — Multi-Agent Workflow Complete\n\n`;
-    const response = combined +
-      `*Routed to: Supply Chain Agent + Fraud & Compliance Agent*\n\n` +
-      `---\n\n### 📦 Supply Chain Report\n\n${scResult.response}\n\n` +
-      `---\n\n### 🔍 Fraud & Compliance Report\n\n${fraudResult.response}`;
-
-    return {
-      agent: "multi_agent",
-      agentsInvoked: [...scResult.agentsInvoked, ...fraudResult.agentsInvoked],
-      toolsUsed: [...scResult.toolsUsed, ...fraudResult.toolsUsed],
-      response,
-      structuredOutput: { supplyChain: scResult.structuredOutput, fraud: fraudResult.structuredOutput },
-      executionMode: "simulated",
-      responseSource: scResult.responseSource === fraudResult.responseSource ? scResult.responseSource : "mixed",
-      responseModel: scResult.responseModel || fraudResult.responseModel,
-      fallbackReason: scResult.fallbackReason || fraudResult.fallbackReason,
-      diagnostic: scResult.diagnostic || fraudResult.diagnostic,
-      status: scResult.status === "completed" && fraudResult.status === "completed" ? "completed" : "failed",
-      durationMs: Date.now() - start,
-    };
-  }
-
-  if (intent === "supply_chain") return runSupplyChainAgent(message, userId);
-  if (intent === "fraud") return runFraudAgent(message, userId);
-  if (intent === "bdc") return runBDCAgent(message, userId);
-
-  return runSupplyChainAgent(message, userId);
+  const enabled = aiPlanning && process.env.AGENT_PLANNING_ENABLED !== "false";
+  const plan = await createAgentPlan(message, enabled
+    ? (system, user) => generateWithGroq(system, user, fetch, { jsonMode: true })
+    : undefined);
+  if (aiPlanning && !enabled) plan.fallbackReason = "disabled_by_server";
+  const { execution, results } = await executeAgentPlan(plan, tool => {
+    // Fixed arguments keep model-generated text out of downstream actions.
+    if (tool === "inspect_inventory") return runSupplyChainAgent("Review inventory, safety stock and purchase orders", userId);
+    if (tool === "inspect_invoice_risk") return runFraudAgent("Review invoice and vendor risk", userId);
+    return runBDCAgent("Show recent batch job status", userId);
+  });
+  const failed = results.some(result => result.status === "failed");
+  const sources = new Set(results.map(result => result.responseSource));
+  const response = results.length
+    ? `${results.length > 1 ? `## Supervisor review ${failed ? "finished with errors" : "complete"}\n\n` : ""}${results.map(result => result.response).join("\n\n---\n\n")}\n\n> Scope: analysis covers imported data across all records (BDC: latest five jobs). No record or date filters were applied. No approval requests or business changes were created. Use the agent Run controls to submit supported recommendations for human approval.`
+    : "I can inspect inventory and purchase orders, invoice and vendor risk, or recent BDC batch jobs. Please specify which analysis you need. Changes, uploads and SAP execution are not available through chat.";
+  const output = results.length === 1 ? results[0].structuredOutput || {} : Object.fromEntries(results.map(result => [result.agent === "supply_chain" ? "supplyChain" : result.agent, result.structuredOutput]));
+  return {
+    agent: results.length > 1 ? "multi_agent" : results[0]?.agent || "unknown",
+    agentsInvoked: [...new Set(results.flatMap(result => result.agentsInvoked))],
+    toolsUsed: [...new Set(results.flatMap(result => result.toolsUsed))],
+    response,
+    structuredOutput: { ...output, execution },
+    execution,
+    executionMode: "simulated",
+    responseSource: sources.size > 1 ? "mixed" : results[0]?.responseSource || "deterministic_agent",
+    responseModel: results.find(result => result.responseModel)?.responseModel,
+    fallbackReason: results.find(result => result.fallbackReason)?.fallbackReason,
+    diagnostic: results.find(result => result.diagnostic)?.diagnostic,
+    status: failed ? "failed" : "completed",
+    durationMs: Date.now() - start,
+  };
 }

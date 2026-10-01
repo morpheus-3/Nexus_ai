@@ -23,3 +23,23 @@
 ## Evidence to capture during an actual run
 
 Record the date, whether the database and Groq request succeeded, imported/validated counts, run/approval IDs, and any errors. Do not include passwords, session tokens, API keys, bank account values, tax IDs, or raw invoice/vendor exports in screenshots. No screenshots are committed because none were captured as part of this pass.
+
+## Agent planning verification
+
+1. Start PostgreSQL and the app, then load or import demo data.
+2. In Command Center, leave **Use AI planning** off and request `Check inventory and BDC batch jobs`. Verify both specialists appear in **Plan & execution**.
+3. Enable **Use AI planning** with a working Groq key and request `Inspect invoice risk, then inventory shortages and recent batch jobs`. Verify the trace identifies the AI planner and shows the actual step outcomes. The request text is sent to Groq; database records stay local.
+4. With no Groq key, repeat the request. Verify the local planner and `missing_api_key` reason are visible and the database analysis still runs.
+5. Ask an unrelated question with local routing. Verify no tools are called and the response asks for a supported analysis.
+6. Expand the run in Observability and verify its stored execution trace matches Command Center.
+7. Verify chat has not created approval requests. Use the existing agent Run controls to submit supported recommendations, then review them in Approvals.
+
+The automated reliability suite covers invalid plans, unsupported tools, duplicate steps, call limits, provider failures, partial tool failures, BDC routing, and the existing import and approval recommendation checks. Browser and database checks above require running local services. Conversation memory and adaptive replanning are later stages.
+
+### First-stage verification results
+
+- All 38 reliability checks, TypeScript, ESLint, and the production build passed.
+- The built Command Center returned HTTP 200 and included the planning control. Blank requests, malformed JSON, and invalid planning flags returned HTTP 400.
+- Against the existing local PostgreSQL data, local multi-agent routing, provider network fallback, and unsupported-request handling passed (verification runs 67–69).
+- A live Groq request selected invoice risk, inventory, then BDC. All three tools completed; the saved trace matched the chat-history and Observability API responses (verification run 70). Approval request counts remained unchanged.
+- These were automated and HTTP/API checks; no interactive browser inspection or screenshots were performed. Verification runs remain in the local run history.

@@ -1,6 +1,8 @@
 "use client";
 import React, { useState, useEffect, useCallback } from "react";
 import { TopBar } from "@/components/layout/TopBar";
+import { ExecutionTrace } from "@/components/agents/ExecutionTrace";
+import type { AgentExecution } from "@/lib/agent-planner";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -121,6 +123,7 @@ function RunCard({ run }: { run: AgentRun }) {
                 <p className="text-xs text-slate-400 whitespace-pre-wrap line-clamp-10">{run.response.slice(0, 500)}{run.response.length > 500 ? "…" : ""}</p>
               </div>
             )}
+            {expanded && <ExecutionTrace execution={run.structuredOutput?.execution as AgentExecution | undefined} />}
 
             {run.errorMessage && (
               <div className="mt-2 p-2 rounded-lg bg-red-500/10 border border-red-500/20">

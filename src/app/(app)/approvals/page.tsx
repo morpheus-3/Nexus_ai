@@ -1,5 +1,5 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { TopBar } from "@/components/layout/TopBar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -48,24 +48,42 @@ export default function ApprovalsPage() {
   const [notes, setNotes] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
   const [filter, setFilter] = useState<"all" | "pending" | "resolved">("pending");
+  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const loadVersion = useRef(0);
+  const actionInFlight = useRef(false);
 
   const load = async () => {
+    const version = ++loadVersion.current;
     try {
-      const res = await fetch("/api/approvals");
+      const res = await fetch("/api/approvals", { cache: "no-store" });
       const d = await res.json();
-      setRequests(d.requests || []);
+      if (!res.ok) throw new Error(d.error || "Unable to load approval requests.");
+      if (!Array.isArray(d.requests)) throw new Error("The server returned an invalid approval list.");
+      if (version === loadVersion.current) { setRequests(d.requests); setError(null); }
+    } catch (e) {
+      if (version === loadVersion.current) setError(e instanceof Error ? e.message : "Unable to load approval requests.");
     } finally {
-      setLoading(false);
+      if (version === loadVersion.current) setLoading(false);
     }
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => { void load(); });
+    return () => { window.cancelAnimationFrame(frame); };
+  }, []);
 
   const handleAction = async () => {
-    if (!selected || !action) return;
+    if (!selected || !action || actionInFlight.current) return;
+    actionInFlight.current = true;
+    ++loadVersion.current;
+    setLoading(false);
     setActionLoading(true);
+    setActionError(null);
+    setNotice(null);
     try {
-      await fetch("/api/approvals", {
+      const res = await fetch("/api/approvals", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -75,11 +93,21 @@ export default function ApprovalsPage() {
           reason: action === "reject" ? notes : undefined,
         }),
       });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "The approval action could not be saved. Please retry.");
+      if (!data.success || !data.request || data.request.requestId !== selected.requestId) {
+        throw new Error("The server did not confirm the updated request. Refresh before retrying.");
+      }
+      // Use the committed record for both the list and its summary counts.
+      setRequests(current => current.map(request => request.requestId === data.request.requestId ? data.request : request));
+      setNotice(action === "approve" ? "Request approved. The approved total has been updated." : "Request rejected. The rejected total has been updated.");
       setSelected(null);
       setAction(null);
       setNotes("");
-      await load();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "The approval action failed. Please retry.");
     } finally {
+      actionInFlight.current = false;
       setActionLoading(false);
     }
   };
@@ -99,7 +127,7 @@ export default function ApprovalsPage() {
         title="Human Approval Center"
         subtitle="Purchase requisitions, payment blocks, vendor changes & batch execution"
         actions={
-          <Button variant="outline" size="sm" onClick={load} disabled={loading}>
+          <Button variant="outline" size="sm" onClick={() => { setLoading(true); setError(null); void load(); }} disabled={loading || actionLoading}>
             <RefreshCw className={cn("w-4 h-4", loading && "animate-spin")} />
             Refresh
           </Button>
@@ -107,6 +135,8 @@ export default function ApprovalsPage() {
       />
 
       <div className="p-6 space-y-6">
+        {error && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{error}</p>}
+        {notice && <p role="status" className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 text-sm text-emerald-300">{notice}</p>}
         {/* KPIs */}
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
           {[
@@ -257,11 +287,11 @@ export default function ApprovalsPage() {
                     {/* Action buttons for pending */}
                     {isPending && (
                       <div className="flex items-center gap-2 mt-4 pt-4 border-t border-[hsl(222_30%_16%)]">
-                        <Button size="sm" variant="success" onClick={() => { setSelected(req); setAction("approve"); }}>
+                        <Button size="sm" variant="success" disabled={actionLoading} onClick={() => { setSelected(req); setAction("approve"); setActionError(null); }}>
                           <CheckCircle className="w-4 h-4" />
                           Approve
                         </Button>
-                        <Button size="sm" variant="destructive" onClick={() => { setSelected(req); setAction("reject"); }}>
+                        <Button size="sm" variant="destructive" disabled={actionLoading} onClick={() => { setSelected(req); setAction("reject"); setActionError(null); }}>
                           <XCircle className="w-4 h-4" />
                           Reject
                         </Button>
@@ -276,7 +306,7 @@ export default function ApprovalsPage() {
       </div>
 
       {/* Confirmation Dialog */}
-      <Dialog open={!!selected && !!action} onOpenChange={() => { setSelected(null); setAction(null); setNotes(""); }}>
+      <Dialog open={!!selected && !!action} onOpenChange={open => { if (!open && !actionInFlight.current) { setSelected(null); setAction(null); setNotes(""); setActionError(null); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle className={cn(
@@ -290,6 +320,7 @@ export default function ApprovalsPage() {
 
           {selected && (
             <div className="space-y-4">
+              {actionError && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-300">{actionError}</p>}
               <div className="p-4 rounded-lg bg-[hsl(222_30%_12%)] border border-[hsl(222_30%_18%)]">
                 <p className="text-sm font-medium text-slate-200">{selected.title}</p>
                 <p className="text-xs text-slate-400 mt-1">{selected.description}</p>
@@ -316,7 +347,7 @@ export default function ApprovalsPage() {
           )}
 
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setSelected(null); setAction(null); setNotes(""); }}>
+            <Button variant="outline" disabled={actionLoading} onClick={() => { setSelected(null); setAction(null); setNotes(""); setActionError(null); }}>
               Cancel
             </Button>
             <Button

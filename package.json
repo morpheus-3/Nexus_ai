@@ -8,7 +8,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "db:verify": "node --experimental-strip-types src/db/verify-connection.ts",
-    "test:reliability": "node --experimental-strip-types --test tests/reliability.test.mjs"
+    "test:approvals": "node --test tests/approvals.integration.test.mjs",
+    "test:reliability": "node --experimental-strip-types --test tests/reliability.test.mjs tests/agent-planner.test.mjs"
   },
   "dependencies": {
     "@radix-ui/react-alert-dialog": "^1.1.23",

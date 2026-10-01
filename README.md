@@ -7,7 +7,7 @@ SAP Nexus AI is a database-backed enterprise operations prototype for SAP supply
 - Dashboard KPIs and seven-day agent activity calculated from PostgreSQL records.
 - Supply Chain analysis for safety stock, shortages, delayed purchase orders, and pending requisitions.
 - Fraud and compliance indicators for duplicates, mismatched invoice bank references, and watchlist vendors. Indicators require human review and are not proof of fraud.
-- Natural-language Command Center routing to Supply Chain, Fraud, BDC, or a multi-agent workflow.
+- Command Center with optional AI planning, validated read-only specialist tools, local routing fallback, and persisted execution traces.
 - CSV/XLSX validation and persistence for inventory, purchase orders, vendors, and invoices; BDC batch simulation with row-level results.
 - Human approval requests for payment-block recommendations and requisitions, with audit and observability records.
 - Settings for thresholds and SAP simulation configuration.
@@ -22,7 +22,20 @@ Next.js App Router (server-rendered pages and API routes)
                                   └─ deterministic fallback
 ```
 
-The supervisor classifies the request and invokes specialist agents. Agents query persisted data and compute findings locally. The only information passed to Groq is an agent name, aggregate numeric facts, and instructions; raw vendor, invoice, bank, chat, credential, and database records are not sent. Agent runs persist their status, source, model, fallback reason, and tool names. Groq output is presented separately from deterministic analysis.
+The supervisor builds a plan and invokes specialist agents through an allowlist. Agents query persisted data and compute findings locally. Narrative generation sends only an agent name, aggregate numeric facts, and instructions to Groq. When **Use AI planning** is selected in Command Center, the current request text is also sent to Groq to select and order tools. Imported database records, conversation history, and database credentials are not sent to the planner. Avoid including sensitive information in requests sent for AI planning. The provider API key is used only for authentication. Agent runs persist the plan, execution steps, outcomes, timing, and planner fallback reason. Groq narratives remain separate from deterministic findings.
+
+## Agent planning (first stage)
+
+In **Command Center**, select **Use AI planning** and try: `Check inventory shortages, inspect invoice risk, and show recent BDC batch jobs.` The response includes a **Plan & execution** panel; the same trace is available when expanding the run in Observability.
+
+- Groq returns a JSON plan; the server validates it before executing any step. Unknown tools, extra arguments, repeated tools, and plans longer than three steps are rejected. This uses [Groq JSON Object Mode](https://console.groq.com/docs/structured-outputs), with application-side schema validation.
+- Available tools call the existing Supply Chain, Fraud, and BDC analysis functions. The plan chooses specialist order; each specialist retains its existing deterministic checks. BDC reads the latest five jobs. Analysis currently covers all imported records; record and date filters are not supported.
+- Without the checkbox, routing stays local. Missing keys, provider errors and invalid plans fall back to local routing with a visible reason. Set `AGENT_PLANNING_ENABLED=false` on the server to disable AI planning regardless of the checkbox; existing narrative settings remain unchanged.
+- Tool failures remain failures in the trace; other selected tools still return their results. A failed run is never labeled fully completed. Unrecognized requests ask for a supported analysis instead of silently querying inventory.
+- Chat only reads business data. It does not create approval requests or execute business changes. The existing **Run Supply Chain** / **Run Fraud** controls submit supported recommendations through the existing human approval workflow.
+- User message, run, assistant message, and audit entry are saved in one database transaction, including execution metadata. No database migration is required.
+
+This stage provides planning, specialist execution and a trace shown after completion. Adaptive replanning, conversation memory, streaming progress, and creating approvals directly from chat are not implemented yet. Each request is handled independently; the stored session is history, not model memory.
 
 All demo navigation and API workflows are available without an account. Approval actions are part of the local demo workflow and are not tied to a named person.
 
@@ -95,6 +108,15 @@ pnpm run test:reliability
 ```
 
 Database-backed and browser verification require a running PostgreSQL database and seeded/imported demo records. See [DEMO_GUIDE.md](DEMO_GUIDE.md) for the evaluation walkthrough and required evidence.
+
+To run approval regression checks against a running local app and its configured PostgreSQL database:
+
+```powershell
+$env:APPROVAL_TEST_URL='http://127.0.0.1:3000'
+pnpm.cmd run test:approvals
+```
+
+These opt-in tests create temporary approval, invoice, and requisition fixtures and remove only those fixtures and their audit entries afterward. They cover single and multiple invoice approvals, stale or invalid links, repeated approvals, summary counts, and requisition decisions. Older approval requests without linked records cannot be approved; the UI displays the server error and allows rejecting outdated requests. Successful actions update the list and its summary directly from the committed server response.
 
 ## Current limitations
 
